@@ -1,0 +1,1928 @@
+diff --git a/Documentation/fb/fbcondecor.rst b/Documentation/fb/fbcondecor.rst
+new file mode 100644
+index 000000000000..e3d43e00fe5a
+--- /dev/null
++++ b/Documentation/fb/fbcondecor.rst
+@@ -0,0 +1,234 @@
++.. SPDX-License-Identifier: GPL-2.0
++
++================================
++Framebuffer Console Decorations
++================================
++
++What is it?
++===========
++
++The framebuffer decorations are a kernel feature which allows displaying a
++background picture on selected consoles.
++
++What do I need to get it to work?
++=================================
++
++To get fbcondecor up-and-running you will have to:
++
++ 1) get a copy of splashutils [1]_ or a similar program
++ 2) get some fbcondecor themes
++ 3) build the kernel helper program
++ 4) build your kernel with the FB_CON_DECOR option enabled.
++
++To get fbcondecor operational right after fbcon initialization is finished, you
++will have to include a theme and the kernel helper into your initramfs image.
++Please refer to splashutils documentation for instructions on how to do that.
++
++.. [1] The splashutils package can be downloaded from:
++       http://github.com/alanhaggai/fbsplash
++
++The userspace helper
++====================
++
++The userspace fbcondecor helper (by default: /sbin/fbcondecor_helper) is called
++by the kernel whenever an important event occurs and the kernel needs some kind
++of job to be carried out. Important events include console switches and video
++mode switches (the kernel requests background images and configuration
++parameters for the current console). The fbcondecor helper must be accessible
++at all times. If it's not, fbcondecor will be switched off automatically.
++
++It's possible to set path to the fbcondecor helper by writing it to
++/proc/sys/kernel/fbcondecor.
++
++The information below is mostly technical stuff. There's probably no need to
++read it unless you plan to develop a userspace helper.
++
++The fbcondecor protocol
++=======================
++
++The fbcondecor protocol defines a communication interface between the kernel
++and the userspace fbcondecor helper.
++
++The kernel side is responsible for:
++
++ * rendering console text, using an image as a background (instead of a
++   standard solid color fbcon uses),
++ * accepting commands from the user via ioctls on the fbcondecor device,
++ * calling the userspace helper to set things up as soon as the fb subsystem
++   is initialized.
++
++The userspace helper is responsible for everything else, including parsing
++configuration files, decompressing the image files whenever the kernel needs
++it, and communicating with the kernel if necessary.
++
++The fbcondecor protocol specifies how communication is done in both ways:
++kernel->userspace and userspace->helper.
++
++Kernel -> Userspace
++-------------------
++
++The kernel communicates with the userspace helper by calling it and specifying
++the task to be done in a series of arguments.
++
++The arguments follow the pattern::
++
++  <fbcondecor protocol version> <command> <parameters>
++
++All commands defined in fbcondecor protocol v2 have the following parameters:
++
++ - virtual console
++ - framebuffer number
++ - theme
++
++Fbcondecor protocol v1 specified an additional 'fbcondecor mode' after the
++framebuffer number. Fbcondecor protocol v1 is deprecated and should not be used.
++
++Fbcondecor protocol v2 specifies the following commands:
++
++getpic
++  The kernel issues this command to request image data. It's up to the
++  userspace helper to find a background image appropriate for the specified
++  theme and the current resolution. The userspace helper should respond by
++  issuing the FBIOCONDECOR_SETPIC ioctl.
++
++init
++  The kernel issues this command whenever fbcon takes over the console: after
++  the fbcondecor device is created and the fbcondecor interface is
++  initialized, and again every time a new framebuffer driver replaces the
++  previous one (e.g. a DRM driver replacing the firmware framebuffer), since
++  the new framebuffer starts with no background picture and the consoles with
++  no configuration. Upon receiving 'init', the userspace helper should parse
++  the kernel command line (/proc/cmdline) or otherwise decide whether
++  fbcondecor is to be activated.
++
++  To activate fbcondecor on the first console the helper should issue the
++  FBIOCONDECOR_SETCFG, FBIOCONDECOR_SETPIC and FBIOCONDECOR_SETSTATE commands,
++  in the above-mentioned order.
++
++  When the userspace helper is called in an early phase of the boot process
++  (right after the initialization of fbcon), no filesystems will be mounted.
++  The helper program should mount sysfs and then create the appropriate
++  framebuffer, fbcondecor and tty0 devices (if they don't already exist) to get
++  current display settings and to be able to communicate with the kernel side.
++  It should probably also mount the procfs to be able to parse the kernel
++  command line parameters.
++
++  The fbcondecor helper should perform all ioctls with origin set to
++  FBCON_DECOR_IO_ORIG_USER.
++
++modechange
++  The kernel issues this command on a mode change of a console with
++  decorations switched on, and when such a console is switched to while the
++  framebuffer holds no picture for its theme and the current video mode. The
++  helper's response should be similar to the response to the 'init' command,
++  with origin set to FBCON_DECOR_IO_ORIG_KERNEL.
++
++The kernel runs the helper while holding the console lock. The helper is only
++waited for until it has been executed; its ioctls then block until the kernel
++releases the console lock.
++
++Userspace -> Kernel
++-------------------
++
++Userspace programs can communicate with fbcondecor via ioctls on the
++fbcondecor device. These ioctls are to be used by both the userspace helper
++(called only by the kernel) and userspace configuration tools (run by the users).
++
++The fbcondecor helper should set the origin field to FBCON_DECOR_IO_ORIG_KERNEL
++when doing the appropriate ioctls. All userspace configuration tools should
++use FBCON_DECOR_IO_ORIG_USER. The origin field is kept for compatibility with
++the helper; the current implementation acquires the console lock for every
++ioctl regardless of its value.
++
++The framebuffer console decoration provides the following ioctls (all defined in
++linux/fb.h):
++
++FBIOCONDECOR_SETPIC
++  description: loads a background picture for a virtual console
++
++  argument: struct fbcon_decor_iowrapper*; data: struct fb_image*
++
++  notes:
++  If called for consoles other than the current foreground one, the picture
++  data will be ignored.
++
++  If the current virtual console is running in a 8-bpp mode, the cmap substruct
++  of fb_image has to be filled appropriately: start should be set to 16 (first
++  16 colors are reserved for fbcon), len to a value <= 240 and red, green and
++  blue should point to valid cmap data. The transp field is ignored. The fields
++  dx, dy, bg_color, fg_color in fb_image are ignored as well.
++
++FBIOCONDECOR_SETCFG
++  description: sets the fbcondecor config for a virtual console
++
++  argument: struct fbcon_decor_iowrapper*; data: struct vc_decor*
++
++  notes: The structure has to be filled with valid data.
++
++FBIOCONDECOR_GETCFG
++  description: gets the fbcondecor config for a virtual console
++
++  argument: struct fbcon_decor_iowrapper*; data: struct vc_decor*
++
++FBIOCONDECOR_SETSTATE
++  description: sets the fbcondecor state for a virtual console
++
++  argument: struct fbcon_decor_iowrapper*; data: unsigned int*
++
++  values: 0 = disabled, 1 = enabled.
++
++FBIOCONDECOR_GETSTATE
++  description: gets the fbcondecor state for a virtual console
++
++  argument: struct fbcon_decor_iowrapper*; data: unsigned int*
++
++  values: as in FBIOCONDECOR_SETSTATE
++
++Info on used structures:
++
++Definition of struct vc_decor can be found in linux/console_decor.h. It's
++heavily commented. Note that the 'theme' field should point to a string
++no longer than FBCON_DECOR_THEME_LEN. When FBIOCONDECOR_GETCFG call is
++performed, the theme field should point to a char buffer of length
++FBCON_DECOR_THEME_LEN.
++
++Definition of struct fbcon_decor_iowrapper can be found in linux/fb.h.
++The fields in this struct have the following meaning:
++
++vc:
++  Virtual console number.
++
++origin:
++  Specifies if the ioctl is performed as a response to a kernel request. The
++  fbcondecor helper should set this field to FBCON_DECOR_IO_ORIG_KERNEL,
++  userspace programs should set it to FBCON_DECOR_IO_ORIG_USER.
++
++data:
++  Pointer to a data structure appropriate for the performed ioctl. Type of
++  the data struct is specified in the ioctls description.
++
++Implementation notes
++====================
++
++The decorations are rendered directly into the screen memory of the
++framebuffer. Drivers which keep a shadow buffer in system memory or otherwise
++need to know about modified screen areas (the DRM fbdev emulation with deferred
++I/O: drm_fbdev_ttm, drm_fbdev_shmem, i915, ...) are told about every modified
++area through the optional fb_ops.fb_damage callback, which the deferred I/O
++helpers in linux/fb.h provide automatically. Framebuffers of other drivers are
++expected to be directly scanned out.
++
++Only unrotated consoles are decorated; the decorations are ignored on consoles
++rotated with the fbcon rotation support. Tile blitting framebuffers are not
++supported.
++
++Credit
++======
++
++Original 'bootsplash' project & implementation by:
++  Volker Poplawski <volker@poplawski.de>, Stefan Reinauer <stepan@suse.de>,
++  Steffen Winterfeldt <snwint@suse.de>, Michael Schroeder <mls@suse.de>,
++  Ken Wimer <wimer@suse.de>.
++
++Fbcondecor, fbcondecor protocol design, current implementation & docs by:
++  Michal Januszewski <michalj+fbcondecor@gmail.com>
+diff --git a/Documentation/fb/index.rst b/Documentation/fb/index.rst
+index fe9ca3570941..0f3dc839a6b8 100644
+--- a/Documentation/fb/index.rst
++++ b/Documentation/fb/index.rst
+@@ -14,6 +14,7 @@ General information
+    cmap_xfbdev
+    deferred_io
+    fbcon
++   fbcondecor
+    framebuffer
+    internals
+    modedb
+diff --git a/drivers/video/console/Kconfig b/drivers/video/console/Kconfig
+index 9f81af3506da..a34d72f2b827 100644
+--- a/drivers/video/console/Kconfig
++++ b/drivers/video/console/Kconfig
+@@ -122,6 +122,19 @@ config FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER
+ 	  by the firmware in place, rather then replacing the contents with a
+ 	  black screen as soon as fbcon loads.
+ 
++config FB_CON_DECOR
++	bool "Framebuffer Console Decorations"
++	depends on FRAMEBUFFER_CONSOLE && !FB_TILEBLITTING
++	help
++	  This option enables support for framebuffer console decorations which
++	  makes it possible to display images in the background of the system
++	  consoles. Note that userspace utilities (a helper program such as
++	  fbcondecor_helper from splashutils) are necessary in order to take
++	  advantage of this feature. Refer to
++	  <file:Documentation/fb/fbcondecor.rst> for more information.
++
++	  If unsure, say N.
++
+ config STI_CONSOLE
+ 	bool "STI text console"
+ 	depends on PARISC && HAS_IOMEM
+diff --git a/drivers/video/fbdev/core/Makefile b/drivers/video/fbdev/core/Makefile
+index d15974759086..f3696cf5a992 100644
+--- a/drivers/video/fbdev/core/Makefile
++++ b/drivers/video/fbdev/core/Makefile
+@@ -14,6 +14,7 @@ fb-$(CONFIG_FB_DEVICE)            += fb_chrdev.o \
+ 
+ ifeq ($(CONFIG_FRAMEBUFFER_CONSOLE),y)
+ fb-y				  += fbcon.o bitblit.o softcursor.o
++fb-$(CONFIG_FB_CON_DECOR)	  += fbcondecor.o cfbcondecor.o
+ ifeq ($(CONFIG_FB_TILEBLITTING),y)
+ fb-y				  += tileblit.o
+ endif
+diff --git a/drivers/video/fbdev/core/bitblit.c b/drivers/video/fbdev/core/bitblit.c
+index 39f44258d793..fc85537ac913 100644
+--- a/drivers/video/fbdev/core/bitblit.c
++++ b/drivers/video/fbdev/core/bitblit.c
+@@ -18,6 +18,7 @@
+ #include <linux/console.h>
+ #include <asm/types.h>
+ #include "fbcon.h"
++#include "fbcondecor.h"
+ 
+ /*
+  * Accelerated handlers.
+@@ -363,11 +364,15 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, bool enable,
+ 	cursor.image.depth = 1;
+ 	cursor.rop = ROP_XOR;
+ 
+-	if (info->fbops->fb_cursor)
+-		err = info->fbops->fb_cursor(info, &cursor);
++	if (fbcon_decor_active(info, vc)) {
++		fbcon_decor_cursor(info, &cursor);
++	} else {
++		if (info->fbops->fb_cursor)
++			err = info->fbops->fb_cursor(info, &cursor);
+ 
+-	if (err)
+-		soft_cursor(info, &cursor);
++		if (err)
++			soft_cursor(info, &cursor);
++	}
+ 
+ 	par->cursor_reset = 0;
+ }
+diff --git a/drivers/video/fbdev/core/cfbcondecor.c b/drivers/video/fbdev/core/cfbcondecor.c
+new file mode 100644
+index 000000000000..5d6a69fb48b9
+--- /dev/null
++++ b/drivers/video/fbdev/core/cfbcondecor.c
+@@ -0,0 +1,409 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ *  linux/drivers/video/fbdev/core/cfbcondecor.c -- Framebuffer decor render functions
++ *
++ *  Copyright (C) 2004 Michal Januszewski <michalj+fbcondecor@gmail.com>
++ *
++ *  Code based upon "Bootdecor" (C) 2001-2003
++ *       Volker Poplawski <volker@poplawski.de>,
++ *       Stefan Reinauer <stepan@suse.de>,
++ *       Steffen Winterfeldt <snwint@suse.de>,
++ *       Michael Schroeder <mls@suse.de>,
++ *       Ken Wimer <wimer@suse.de>.
++ *
++ *  This file is subject to the terms and conditions of the GNU General Public
++ *  License.  See the file COPYING in the main directory of this archive for
++ *  more details.
++ *
++ *  The decorations are drawn directly into the screen memory (which may be a
++ *  shadow buffer in system memory with drivers using deferred I/O), so every
++ *  drawing operation reports the modified area through fb_ops.fb_damage.
++ */
++
++#include <linux/fb.h>
++#include <linux/io.h>
++#include <linux/minmax.h>
++#include <linux/module.h>
++#include <linux/selection.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/types.h>
++#include <linux/vt_kern.h>
++
++#include "fbcon.h"
++#include "fbcondecor.h"
++
++#define cc2cx(a)						\
++	((info->fix.visual == FB_VISUAL_TRUECOLOR ||		\
++	  info->fix.visual == FB_VISUAL_DIRECTCOLOR) ?		\
++	 ((u32 *)info->pseudo_palette)[a] : (a))
++
++static inline unsigned int bytes_per_pixel(const struct fb_info *info)
++{
++	return (info->var.bits_per_pixel + 7) >> 3;
++}
++
++static void fbcon_decor_damage(struct fb_info *info, int x, int y,
++			       int width, int height)
++{
++	if (!info->fbops->fb_damage)
++		return;
++
++	if (x < 0 || y < 0 || x >= info->var.xres || y >= info->var.yres)
++		return;
++
++	width = min_t(int, width, info->var.xres - x);
++	height = min_t(int, height, info->var.yres - y);
++	if (width <= 0 || height <= 0)
++		return;
++
++	info->fbops->fb_damage(info, x, y, width, height);
++}
++
++/*
++ * Renders a 1 bpp bitmap @src (rows padded to whole bytes) of @width x @height
++ * pixels at (@xpos, @ypos). Set bits are drawn in @fgx, clear bits in @bgx
++ * or, when @transparent is set, with the background picture.
++ */
++static void fbcon_decor_renderc(struct fb_info *info, int ypos, int xpos,
++				int height, int width, const u8 *src,
++				u32 fgx, u32 bgx, bool transparent)
++{
++	unsigned int bytespp = bytes_per_pixel(info);
++	const u8 *decor_src = info->bgdecor.data +
++		(ypos * info->var.xres + xpos) * bytespp;
++	u8 __iomem *dst = info->screen_base +
++		ypos * info->fix.line_length + xpos * bytespp;
++	unsigned int x, y;
++	u8 bits = 0;
++	u32 dd;
++
++	if (ypos < 0 || xpos < 0 ||
++	    ypos + height > info->var.yres || xpos + width > info->var.xres)
++		return;
++
++	for (y = 0; y < height; y++) {
++		switch (info->var.bits_per_pixel) {
++		case 32:
++			for (x = 0; x < width; x++) {
++				if ((x & 7) == 0)
++					bits = *src++;
++				if (bits & 0x80)
++					dd = fgx;
++				else
++					dd = transparent ?
++					     *(const u32 *)decor_src : bgx;
++				bits <<= 1;
++				decor_src += 4;
++				fb_writel(dd, dst);
++				dst += 4;
++			}
++			break;
++		case 24:
++			for (x = 0; x < width; x++) {
++				if ((x & 7) == 0)
++					bits = *src++;
++				if (bits & 0x80)
++					dd = fgx;
++				else
++					dd = transparent ?
++					     (*(const u32 *)decor_src & 0xffffff) : bgx;
++				bits <<= 1;
++				decor_src += 3;
++#ifdef __LITTLE_ENDIAN
++				fb_writew(dd & 0xffff, dst);
++				fb_writeb(dd >> 16, dst + 2);
++#else
++				fb_writew(dd >> 8, dst);
++				fb_writeb(dd & 0xff, dst + 2);
++#endif
++				dst += 3;
++			}
++			break;
++		case 16:
++			for (x = 0; x < width; x++) {
++				if ((x & 7) == 0)
++					bits = *src++;
++				if (bits & 0x80)
++					dd = fgx;
++				else
++					dd = transparent ?
++					     *(const u16 *)decor_src : bgx;
++				bits <<= 1;
++				decor_src += 2;
++				fb_writew(dd, dst);
++				dst += 2;
++			}
++			break;
++		case 8:
++			for (x = 0; x < width; x++) {
++				if ((x & 7) == 0)
++					bits = *src++;
++				if (bits & 0x80)
++					dd = fgx;
++				else
++					dd = transparent ? *decor_src : bgx;
++				bits <<= 1;
++				decor_src++;
++				fb_writeb(dd, dst);
++				dst++;
++			}
++			break;
++		}
++
++		dst += info->fix.line_length - width * bytespp;
++		decor_src += (info->var.xres - width) * bytespp;
++	}
++}
++
++/* Fills a rectangle with a solid color. */
++static void decorset(u8 __iomem *dst, int height, int width, int dstbytes,
++		     u32 bgx, int bpp)
++{
++	int i;
++
++	while (height-- > 0) {
++		u8 __iomem *p = dst;
++
++		switch (bpp) {
++		case 32:
++			for (i = 0; i < width; i++) {
++				fb_writel(bgx, p);
++				p += 4;
++			}
++			break;
++		case 24:
++			for (i = 0; i < width; i++) {
++#ifdef __LITTLE_ENDIAN
++				fb_writew(bgx & 0xffff, p);
++				fb_writeb(bgx >> 16, p + 2);
++#else
++				fb_writew(bgx >> 8, p);
++				fb_writeb(bgx & 0xff, p + 2);
++#endif
++				p += 3;
++			}
++			break;
++		case 16:
++			for (i = 0; i < width; i++) {
++				fb_writew(bgx, p);
++				p += 2;
++			}
++			break;
++		case 8:
++			for (i = 0; i < width; i++) {
++				fb_writeb(bgx, p);
++				p++;
++			}
++			break;
++		}
++
++		dst += dstbytes;
++	}
++}
++
++/* Copies a rectangle of the background picture to the screen. */
++static void decorfill(struct fb_info *info, int sy, int sx, int height,
++		      int width)
++{
++	unsigned int bytespp = bytes_per_pixel(info);
++	size_t rowlen;
++	u8 __iomem *dst;
++	const u8 *src;
++
++	if (sx < 0 || sy < 0 || sx >= info->var.xres || sy >= info->var.yres)
++		return;
++
++	width = min_t(int, width, info->var.xres - sx);
++	height = min_t(int, height, info->var.yres - sy);
++	if (width <= 0 || height <= 0)
++		return;
++
++	rowlen = (size_t)width * bytespp;
++	dst = info->screen_base + sy * info->fix.line_length + sx * bytespp;
++	src = info->bgdecor.data + ((size_t)sy * info->var.xres + sx) * bytespp;
++
++	while (height-- > 0) {
++		if (info->flags & FBINFO_VIRTFB)
++			memcpy((void __force *)dst, src, rowlen);
++		else
++			memcpy_toio(dst, src, rowlen);
++		dst += info->fix.line_length;
++		src += (size_t)info->var.xres * bytespp;
++	}
++}
++
++void fbcon_decor_putcs(struct vc_data *vc, struct fb_info *info,
++		       const unsigned short *s, int count, int yy, int xx,
++		       int fg_color, int bg_color)
++{
++	unsigned short charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
++	unsigned int charcount = vc->vc_font.charcount;
++	unsigned int cellsize = vc->vc_font.height *
++				DIV_ROUND_UP(vc->vc_font.width, 8);
++	struct fbcon_par *par = info->fbcon_par;
++	bool transparent;
++	const u8 *src;
++	u32 bgx, fgx;
++	u16 c;
++	int x0;
++
++	/* Don't paint the background image if console is blanked */
++	transparent = !par->blank_state && vc->vc_decor.bg_color == bg_color;
++
++	xx = xx * vc->vc_font.width + vc->vc_decor.tx;
++	yy = yy * vc->vc_font.height + vc->vc_decor.ty;
++	x0 = xx;
++
++	fgx = cc2cx(fg_color);
++	bgx = cc2cx(bg_color);
++
++	while (count--) {
++		c = scr_readw(s++) & charmask;
++		if (c >= charcount)
++			c = 0;
++		src = vc->vc_font.data + c * cellsize;
++
++		fbcon_decor_renderc(info, yy, xx, vc->vc_font.height,
++				    vc->vc_font.width, src, fgx, bgx,
++				    transparent);
++		xx += vc->vc_font.width;
++	}
++
++	fbcon_decor_damage(info, x0, yy, xx - x0, vc->vc_font.height);
++}
++
++void fbcon_decor_cursor(struct fb_info *info, struct fb_cursor *cursor)
++{
++	struct fbcon_par *par = info->fbcon_par;
++	const u8 *image = (const u8 *)cursor->image.data;
++	const u8 *mask = (const u8 *)cursor->mask;
++	unsigned int dsize, s_pitch, i;
++	struct vc_data *vc;
++	int x, y;
++	u8 *src;
++
++	/* we really don't need any cursors while the console is blanked */
++	if (info->state != FBINFO_STATE_RUNNING || par->blank_state ||
++	    par->currcon < 0)
++		return;
++
++	vc = vc_cons[par->currcon].d;
++	if (!vc)
++		return;
++
++	s_pitch = DIV_ROUND_UP(cursor->image.width, 8);
++	dsize = s_pitch * cursor->image.height;
++	src = kmalloc(dsize, GFP_ATOMIC);
++	if (!src)
++		return;
++
++	if (cursor->enable) {
++		switch (cursor->rop) {
++		case ROP_XOR:
++			for (i = 0; i < dsize; i++)
++				src[i] = image[i] ^ mask[i];
++			break;
++		case ROP_COPY:
++		default:
++			for (i = 0; i < dsize; i++)
++				src[i] = image[i] & mask[i];
++			break;
++		}
++	} else {
++		memcpy(src, image, dsize);
++	}
++
++	x = cursor->image.dx + vc->vc_decor.tx;
++	y = cursor->image.dy + vc->vc_decor.ty;
++
++	fbcon_decor_renderc(info, y, x, cursor->image.height,
++			    cursor->image.width, src,
++			    cc2cx(cursor->image.fg_color),
++			    cc2cx(cursor->image.bg_color),
++			    cursor->image.bg_color == vc->vc_decor.bg_color);
++	fbcon_decor_damage(info, x, y, cursor->image.width,
++			   cursor->image.height);
++
++	kfree(src);
++}
++
++void fbcon_decor_clear(struct vc_data *vc, struct fb_info *info, int sy, int sx,
++		       int height, int width, int bg_color)
++{
++	struct fbcon_par *par = info->fbcon_par;
++	bool transparent = vc->vc_decor.bg_color == bg_color;
++	u8 __iomem *dst;
++
++	sy = sy * vc->vc_font.height + vc->vc_decor.ty;
++	sx = sx * vc->vc_font.width + vc->vc_decor.tx;
++	height *= vc->vc_font.height;
++	width *= vc->vc_font.width;
++
++	if (sx < 0 || sy < 0 || sx >= info->var.xres || sy >= info->var.yres)
++		return;
++
++	width = min_t(int, width, info->var.xres - sx);
++	height = min_t(int, height, info->var.yres - sy);
++	if (width <= 0 || height <= 0)
++		return;
++
++	/* Don't paint the background image if console is blanked */
++	if (transparent && !par->blank_state) {
++		decorfill(info, sy, sx, height, width);
++	} else {
++		dst = info->screen_base + sy * info->fix.line_length +
++		      sx * bytes_per_pixel(info);
++		decorset(dst, height, width, info->fix.line_length,
++			 cc2cx(bg_color), info->var.bits_per_pixel);
++	}
++
++	fbcon_decor_damage(info, sx, sy, width, height);
++}
++
++void fbcon_decor_clear_margins(struct vc_data *vc, struct fb_info *info,
++			       int bottom_only)
++{
++	int tx = vc->vc_decor.tx;
++	int ty = vc->vc_decor.ty;
++	int tw = vc->vc_cols * vc->vc_font.width;
++	int th = vc->vc_rows * vc->vc_font.height;
++	int xres = info->var.xres;
++	int yres = info->var.yres;
++
++	if (!bottom_only) {
++		/* top margin */
++		decorfill(info, 0, 0, ty, xres);
++		/* left margin */
++		decorfill(info, ty, 0, th, tx);
++		/* right margin */
++		decorfill(info, ty, tx + tw, th, xres - tx - tw);
++		fbcon_decor_damage(info, 0, 0, xres, ty + th);
++	}
++	/* bottom margin */
++	decorfill(info, ty + th, 0, yres - ty - th, xres);
++	fbcon_decor_damage(info, 0, ty + th, xres, yres - ty - th);
++}
++
++void fbcon_decor_blank(struct vc_data *vc, struct fb_info *info, int blank)
++{
++	if (blank) {
++		decorset(info->screen_base, info->var.yres, info->var.xres,
++			 info->fix.line_length, 0, info->var.bits_per_pixel);
++		fbcon_decor_damage(info, 0, 0, info->var.xres, info->var.yres);
++	} else {
++		update_screen(vc);
++		fbcon_decor_clear_margins(vc, info, 0);
++	}
++}
++
++/*
++ * In 8 bpp modes the background picture comes with its own palette (entries
++ * above the 16 console colors); load it before the console palette.
++ */
++void fbcon_decor_set_palette(struct vc_data *vc, struct fb_info *info)
++{
++	if (fbcon_decor_active(info, vc) && info->var.bits_per_pixel == 8 &&
++	    info->bgdecor.cmap.red)
++		fb_set_cmap(&info->bgdecor.cmap, info);
++}
+diff --git a/drivers/video/fbdev/core/fbcon.c b/drivers/video/fbdev/core/fbcon.c
+index 01715873ea49..ea90d7dcb313 100644
+--- a/drivers/video/fbdev/core/fbcon.c
++++ b/drivers/video/fbdev/core/fbcon.c
+@@ -84,6 +84,7 @@
+ #include "fbcon.h"
+ #include "fbcon_rotate.h"
+ #include "fb_internal.h"
++#include "fbcondecor.h"
+ 
+ /*
+  * FIXME: Locking
+@@ -118,7 +119,7 @@ static int fbcon_num_registered_fb;
+ static signed char con2fb_map[MAX_NR_CONSOLES];
+ static signed char con2fb_map_boot[MAX_NR_CONSOLES];
+ 
+-static struct fb_info *fbcon_info_from_console(int console)
++struct fb_info *fbcon_info_from_console(int console)
+ {
+ 	signed char fb;
+ 	WARN_CONSOLE_UNLOCKED();
+@@ -626,6 +627,7 @@ static int do_fbcon_takeover(int show_logo)
+ 		info_idx = -1;
+ 	} else {
+ 		fbcon_has_console_bind = true;
++		fbcon_decor_init();
+ 	}
+ 
+ 	return err;
+@@ -786,6 +788,8 @@ static void fbcon_release(struct fb_info *info)
+ 
+ 	module_put(info->fbops->owner);
+ 
++	fbcon_decor_release_info(info);
++
+ 	if (info->fbcon_par) {
+ 		struct fbcon_par *par = info->fbcon_par;
+ 
+@@ -1114,7 +1118,7 @@ static void fbcon_init(struct vc_data *vc, bool init)
+ 		logo_shown = FBCON_LOGO_DONTSHOW;
+ 
+ 	if (vc != svc || logo_shown == FBCON_LOGO_DONTSHOW ||
+-	    (info->fix.type == FB_TYPE_TEXT))
++	    (info->fix.type == FB_TYPE_TEXT) || fbcon_decor_active(info, vc))
+ 		logo = 0;
+ 
+ 	if (var_to_display(p, &info->var, info))
+@@ -1189,6 +1193,11 @@ static void fbcon_init(struct vc_data *vc, bool init)
+ 	new_cols /= vc->vc_font.width;
+ 	new_rows /= vc->vc_font.height;
+ 
++	if (fbcon_decor_active(info, vc)) {
++		new_cols = vc->vc_decor.twidth / vc->vc_font.width;
++		new_rows = vc->vc_decor.theight / vc->vc_font.height;
++	}
++
+ 	/*
+ 	 * We must always set the mode. The mode of the previous console
+ 	 * driver could be in the same resolution but we are using different
+@@ -1304,6 +1313,7 @@ static void fbcon_deinit(struct vc_data *vc)
+ 
+ 	fbcon_free_font(p);
+ 	vc->vc_font.data = NULL;
++	fbcon_decor_vc_reset(vc);
+ 
+ 	if (vc->vc_hi_font_mask && vc->vc_screenbuf)
+ 		set_vc_hi_font(vc, false);
+@@ -1370,6 +1380,12 @@ static void __fbcon_clear(struct vc_data *vc, unsigned int sy, unsigned int sx,
+ 
+ 	fg = get_color(vc, info, vc->vc_video_erase_char, 1);
+ 	bg = get_color(vc, info, vc->vc_video_erase_char, 0);
++
++	if (fbcon_decor_active(info, vc)) {
++		fbcon_decor_clear(vc, info, sy, sx, height, width, bg);
++		return;
++	}
++
+ 	/* Split blits that cross physical y_wrap boundary */
+ 
+ 	y_break = p->vrows - p->yscroll;
+@@ -1395,7 +1411,14 @@ static void fbcon_putcs(struct vc_data *vc, const u16 *s, unsigned int count,
+ 	struct fbcon_display *p = &fb_display[vc->vc_num];
+ 	struct fbcon_par *par = info->fbcon_par;
+ 
+-	if (fbcon_is_active(vc, info))
++	if (!fbcon_is_active(vc, info))
++		return;
++
++	if (fbcon_decor_active(info, vc))
++		fbcon_decor_putcs(vc, info, s, count, ypos, xpos,
++				  get_fg_color(vc, info, scr_readw(s)),
++				  get_bg_color(vc, info, scr_readw(s)));
++	else
+ 		par->bitops->putcs(vc, info, s, count, real_y(p, ypos), xpos,
+ 				   get_fg_color(vc, info, scr_readw(s)),
+ 				   get_bg_color(vc, info, scr_readw(s)));
+@@ -1406,7 +1429,12 @@ static void fbcon_clear_margins(struct vc_data *vc, int bottom_only)
+ 	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
+ 	struct fbcon_par *par = info->fbcon_par;
+ 
+-	if (fbcon_is_active(vc, info))
++	if (!fbcon_is_active(vc, info))
++		return;
++
++	if (fbcon_decor_active(info, vc))
++		fbcon_decor_clear_margins(vc, info, bottom_only);
++	else
+ 		par->bitops->clear_margins(vc, info, margin_color, bottom_only);
+ }
+ 
+@@ -1856,6 +1884,9 @@ static bool fbcon_scroll(struct vc_data *vc, unsigned int t, unsigned int b,
+ 	case SM_UP:
+ 		if (count > vc->vc_rows)	/* Maximum realistic size */
+ 			count = vc->vc_rows;
++		/* Redraw to keep the background picture intact */
++		if (fbcon_decor_active(info, vc))
++			goto redraw_up;
+ 		switch (fb_scrollmode(p)) {
+ 		case SCROLL_MOVE:
+ 			fbcon_redraw_blit(vc, info, p, t, b - t - count,
+@@ -1944,6 +1975,9 @@ static bool fbcon_scroll(struct vc_data *vc, unsigned int t, unsigned int b,
+ 	case SM_DOWN:
+ 		if (count > vc->vc_rows)	/* Maximum realistic size */
+ 			count = vc->vc_rows;
++		/* Redraw to keep the background picture intact */
++		if (fbcon_decor_active(info, vc))
++			goto redraw_down;
+ 		switch (fb_scrollmode(p)) {
+ 		case SCROLL_MOVE:
+ 			fbcon_redraw_blit(vc, info, p, b - 1, b - t - count,
+@@ -2120,8 +2154,8 @@ static int fbcon_resize(struct vc_data *vc, unsigned int width,
+ 	var.yres = virt_h * virt_fh;
+ 	x_diff = info->var.xres - var.xres;
+ 	y_diff = info->var.yres - var.yres;
+-	if (x_diff < 0 || x_diff > virt_fw ||
+-	    y_diff < 0 || y_diff > virt_fh) {
++	if ((x_diff < 0 || x_diff > virt_fw ||
++	     y_diff < 0 || y_diff > virt_fh) && !fbcon_decor_vc_state(vc)) {
+ 		const struct fb_videomode *mode;
+ 
+ 		pr_debug("attempting resize %ix%i\n", var.xres, var.yres);
+@@ -2213,6 +2247,14 @@ static bool fbcon_switch(struct vc_data *vc)
+ 			fbcon_del_cursor_work(old_info);
+ 	}
+ 
++	/*
++	 * Ask the helper for a background picture if the console has
++	 * decorations switched on but the framebuffer holds no picture for
++	 * its theme and the current video mode.
++	 */
++	if (fbcon_decor_active_vc(vc) && !fbcon_decor_picture_ok(info, vc))
++		fbcon_decor_modechange(vc);
++
+ 	if (!fbcon_is_active(vc, info) || par->blank_state != FB_BLANK_UNBLANK)
+ 		fbcon_del_cursor_work(info);
+ 	else
+@@ -2314,8 +2356,12 @@ static bool fbcon_blank(struct vc_data *vc, enum vesa_blank_mode blank,
+ 			fbcon_cursor(vc, !blank);
+ 			par->cursor_flash = (!blank);
+ 
+-			if (fb_blank(info, blank))
+-				fbcon_generic_blank(vc, info, blank);
++			if (fb_blank(info, blank)) {
++				if (fbcon_decor_active(info, vc))
++					fbcon_decor_blank(vc, info, blank);
++				else
++					fbcon_generic_blank(vc, info, blank);
++			}
+ 		}
+ 
+ 		if (!blank)
+@@ -2437,6 +2483,11 @@ static int fbcon_do_set_font(struct vc_data *vc, int w, int h, int charcount,
+ 
+ 		cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
+ 		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
++		if (fbcon_decor_active(info, vc)) {
++			par->var.xoffset = par->var.yoffset = p->yscroll = 0;
++			cols = vc->vc_decor.twidth;
++			rows = vc->vc_decor.theight;
++		}
+ 		cols /= w;
+ 		rows /= h;
+ 		ret = vc_resize(vc, cols, rows);
+@@ -2585,6 +2636,7 @@ static void fbcon_set_palette(struct vc_data *vc, const unsigned char *table)
+ 	} else
+ 		fb_copy_cmap(fb_default_cmap(1 << depth), &palette_cmap);
+ 
++	fbcon_decor_set_palette(vc, info);
+ 	fb_set_cmap(&palette_cmap, info);
+ }
+ 
+@@ -2679,7 +2731,10 @@ static void fbcon_modechanged(struct fb_info *info)
+ 		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
+ 		cols /= vc->vc_font.width;
+ 		rows /= vc->vc_font.height;
+-		vc_resize(vc, cols, rows);
++		if (fbcon_decor_active_vc(vc))
++			fbcon_decor_modechange(vc);
++		else
++			vc_resize(vc, cols, rows);
+ 		updatescrollmode(p, info, vc);
+ 		scrollback_max = 0;
+ 		scrollback_current = 0;
+@@ -2725,7 +2780,8 @@ static void fbcon_set_all_vcs(struct fb_info *info)
+ 		rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
+ 		cols /= vc->vc_font.width;
+ 		rows /= vc->vc_font.height;
+-		vc_resize(vc, cols, rows);
++		if (!fbcon_decor_active_vc(vc))
++			vc_resize(vc, cols, rows);
+ 	}
+ 
+ 	if (fg != -1)
+diff --git a/drivers/video/fbdev/core/fbcon.h b/drivers/video/fbdev/core/fbcon.h
+index 407d207b14f1..f5c559e720d4 100644
+--- a/drivers/video/fbdev/core/fbcon.h
++++ b/drivers/video/fbdev/core/fbcon.h
+@@ -201,6 +201,7 @@ extern void fbcon_set_tileops(struct vc_data *vc, struct fb_info *info);
+ #endif
+ extern void fbcon_set_bitops_ur(struct fbcon_par *par);
+ extern int  soft_cursor(struct fb_info *info, struct fb_cursor *cursor);
++struct fb_info *fbcon_info_from_console(int console);
+ 
+ void fbcon_fill_cursor_mask(struct fbcon_par *par, struct vc_data *vc, unsigned char *mask);
+ 
+diff --git a/drivers/video/fbdev/core/fbcondecor.c b/drivers/video/fbdev/core/fbcondecor.c
+new file mode 100644
+index 000000000000..d1aee559c96a
+--- /dev/null
++++ b/drivers/video/fbdev/core/fbcondecor.c
+@@ -0,0 +1,679 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ *  linux/drivers/video/fbdev/core/fbcondecor.c -- Framebuffer console decorations
++ *
++ *  Copyright (C) 2004-2009 Michal Januszewski <michalj+fbcondecor@gmail.com>
++ *
++ *  Code based upon "Bootsplash" (C) 2001-2003
++ *       Volker Poplawski <volker@poplawski.de>,
++ *       Stefan Reinauer <stepan@suse.de>,
++ *       Steffen Winterfeldt <snwint@suse.de>,
++ *       Michael Schroeder <mls@suse.de>,
++ *       Ken Wimer <wimer@suse.de>.
++ *
++ *  Compat ioctl support by Thorsten Klein <TK@Thorsten-Klein.de>.
++ *
++ *  This file is subject to the terms and conditions of the GNU General Public
++ *  License.  See the file COPYING in the main directory of this archive for
++ *  more details.
++ */
++
++#include <linux/compat.h>
++#include <linux/console.h>
++#include <linux/errno.h>
++#include <linux/fb.h>
++#include <linux/fs.h>
++#include <linux/kernel.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/overflow.h>
++#include <linux/printk.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/sysctl.h>
++#include <linux/types.h>
++#include <linux/uaccess.h>
++#include <linux/umh.h>
++#include <linux/vmalloc.h>
++#include <linux/vt_kern.h>
++
++#include "fbcon.h"
++#include "fbcondecor.h"
++
++#define FBCON_DECOR_PATH_LEN	256
++
++static bool fbcon_decor_registered;
++
++static char fbcon_decor_path[FBCON_DECOR_PATH_LEN] = "/sbin/fbcondecor_helper";
++
++static const struct ctl_table fbcon_decor_sysctl_table[] = {
++	{
++		.procname	= "fbcondecor",
++		.data		= fbcon_decor_path,
++		.maxlen		= sizeof(fbcon_decor_path),
++		.mode		= 0644,
++		.proc_handler	= proc_dostring,
++	},
++};
++
++/*
++ * Runs the userspace helper for console @vc_num. Called with the console
++ * lock held; the helper is only waited for until it has been executed, its
++ * ioctls then block until the lock is released again.
++ */
++int fbcon_decor_call_helper(const char *cmd, unsigned short vc_num)
++{
++	char *envp[] = {
++		"HOME=/",
++		"PATH=/sbin:/bin",
++		NULL
++	};
++	struct fb_info *info = fbcon_info_from_console(vc_num);
++	struct vc_data *vc = vc_cons[vc_num].d;
++	char tfb[8];
++	char tcons[8];
++	char *argv[] = {
++		fbcon_decor_path,
++		"2",
++		(char *)cmd,
++		tcons,
++		tfb,
++		vc ? vc->vc_decor.theme : NULL,
++		NULL
++	};
++
++	snprintf(tfb, sizeof(tfb), "%d", info ? info->node : 0);
++	snprintf(tcons, sizeof(tcons), "%d", vc_num);
++
++	return call_usermodehelper(fbcon_decor_path, argv, envp, UMH_WAIT_EXEC);
++}
++
++/* Disables decorations on a virtual console; called with the console lock held. */
++int fbcon_decor_disable(struct vc_data *vc, bool redraw)
++{
++	struct fb_info *info;
++	struct fbcon_par *par;
++	unsigned int cols, rows;
++
++	if (!vc->vc_decor.state)
++		return -EINVAL;
++
++	vc->vc_decor.state = 0;
++
++	info = fbcon_info_from_console(vc->vc_num);
++	if (!info || !info->fbcon_par)
++		return -EINVAL;
++	par = info->fbcon_par;
++
++	cols = FBCON_SWAP(par->rotate, info->var.xres, info->var.yres);
++	rows = FBCON_SWAP(par->rotate, info->var.yres, info->var.xres);
++	vc_resize(vc, cols / vc->vc_font.width, rows / vc->vc_font.height);
++
++	if (fg_console == vc->vc_num && redraw) {
++		redraw_screen(vc, 0);
++		update_region(vc, vc->vc_origin + vc->vc_size_row * vc->vc_top,
++			      vc->vc_size_row * (vc->vc_bottom - vc->vc_top) / 2);
++	}
++
++	pr_info("fbcondecor: switched decor state to 'off' on console %d\n",
++		vc->vc_num);
++
++	return 0;
++}
++
++/* Enables decorations on a virtual console; called with the console lock held. */
++static int fbcon_decor_enable(struct vc_data *vc)
++{
++	struct fb_info *info = fbcon_info_from_console(vc->vc_num);
++
++	if (!info || !info->fbcon_par ||
++	    vc->vc_decor.twidth == 0 || vc->vc_decor.theight == 0 ||
++	    vc->vc_decor.state ||
++	    (!info->bgdecor.data && vc->vc_num == fg_console))
++		return -EINVAL;
++
++	vc->vc_decor.state = 1;
++	vc_resize(vc, vc->vc_decor.twidth / vc->vc_font.width,
++		  vc->vc_decor.theight / vc->vc_font.height);
++
++	if (fg_console == vc->vc_num) {
++		redraw_screen(vc, 0);
++		update_region(vc, vc->vc_origin + vc->vc_size_row * vc->vc_top,
++			      vc->vc_size_row * (vc->vc_bottom - vc->vc_top) / 2);
++		if (fbcon_decor_active(info, vc))
++			fbcon_decor_clear_margins(vc, info, 0);
++	}
++
++	pr_info("fbcondecor: switched decor state to 'on' on console %d\n",
++		vc->vc_num);
++
++	return 0;
++}
++
++/*
++ * The video mode (or the framebuffer) of a decorated console changed: switch
++ * the decorations off and ask the helper for a matching configuration and
++ * picture. Called with the console lock held.
++ */
++void fbcon_decor_modechange(struct vc_data *vc)
++{
++	fbcon_decor_disable(vc, false);
++	fbcon_decor_call_helper("modechange", vc->vc_num);
++}
++
++/* Called with the console lock held. */
++static struct vc_data *fbcon_decor_vc(unsigned int vc_num)
++{
++	if (vc_num >= MAX_NR_CONSOLES || !vc_cons_allocated(vc_num))
++		return NULL;
++
++	return vc_cons[vc_num].d;
++}
++
++static int fbcon_decor_ioctl_dosetstate(unsigned int vc_num, unsigned int state)
++{
++	struct vc_data *vc;
++	int ret;
++
++	console_lock();
++	vc = fbcon_decor_vc(vc_num);
++	if (!vc)
++		ret = -EINVAL;
++	else if (state)
++		ret = fbcon_decor_enable(vc);
++	else
++		ret = fbcon_decor_disable(vc, true);
++	console_unlock();
++
++	return ret;
++}
++
++static int fbcon_decor_ioctl_dogetstate(unsigned int vc_num, unsigned int *state)
++{
++	struct vc_data *vc;
++	int ret = 0;
++
++	console_lock();
++	vc = fbcon_decor_vc(vc_num);
++	if (vc)
++		*state = vc->vc_decor.state;
++	else
++		ret = -EINVAL;
++	console_unlock();
++
++	return ret;
++}
++
++/* @cfg->theme points to user memory. */
++static int fbcon_decor_ioctl_dosetcfg(unsigned int vc_num,
++				      const struct vc_decor *cfg)
++{
++	struct fb_info *info;
++	struct vc_data *vc;
++	char *theme;
++	int ret = 0;
++
++	if (!cfg->twidth || !cfg->theight)
++		return -EINVAL;
++
++	theme = strndup_user((const char __force __user *)cfg->theme,
++			     FBCON_DECOR_THEME_LEN);
++	if (IS_ERR(theme))
++		return PTR_ERR(theme);
++
++	console_lock();
++	vc = fbcon_decor_vc(vc_num);
++	info = vc ? fbcon_info_from_console(vc_num) : NULL;
++	if (!info ||
++	    cfg->tx + cfg->twidth > info->var.xres ||
++	    cfg->ty + cfg->theight > info->var.yres) {
++		ret = -EINVAL;
++		goto out_unlock;
++	}
++
++	if (vc->vc_decor.state)
++		fbcon_decor_disable(vc, true);
++
++	kfree(vc->vc_decor.theme);
++	vc->vc_decor = *cfg;
++	vc->vc_decor.state = 0;
++	vc->vc_decor.theme = theme;
++	theme = NULL;
++
++	pr_info("fbcondecor: console %d using theme '%s'\n", vc_num,
++		vc->vc_decor.theme);
++
++out_unlock:
++	console_unlock();
++	kfree(theme);
++	return ret;
++}
++
++/* @cfg->theme points to a user buffer of at least FBCON_DECOR_THEME_LEN bytes. */
++static int fbcon_decor_ioctl_dogetcfg(unsigned int vc_num, struct vc_decor *cfg)
++{
++	char __user *utheme = (char __force __user *)cfg->theme;
++	char theme[FBCON_DECOR_THEME_LEN];
++	struct vc_data *vc;
++
++	console_lock();
++	vc = fbcon_decor_vc(vc_num);
++	if (!vc) {
++		console_unlock();
++		return -EINVAL;
++	}
++	*cfg = vc->vc_decor;
++	strscpy(theme, vc->vc_decor.theme ? vc->vc_decor.theme : "",
++		sizeof(theme));
++	console_unlock();
++
++	cfg->theme = (char __force *)utheme;
++	if (copy_to_user(utheme, theme, strlen(theme) + 1))
++		return -EFAULT;
++
++	return 0;
++}
++
++/* @img->data and @img->cmap.{red,green,blue} point to user memory. */
++static int fbcon_decor_ioctl_dosetpic(unsigned int vc_num,
++				      const struct fb_image *img)
++{
++	struct fb_info *info;
++	struct vc_data *vc;
++	u16 *cmap = NULL;
++	u8 *data;
++	size_t len, clen = 0;
++	unsigned int bytespp;
++	int ret;
++
++	switch (img->depth) {
++	case 8:
++	case 16:
++	case 24:
++	case 32:
++		bytespp = img->depth / 8;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (!img->width || !img->height ||
++	    check_mul_overflow((size_t)img->width * bytespp, (size_t)img->height,
++			       &len))
++		return -EINVAL;
++
++	console_lock();
++	vc = fbcon_decor_vc(vc_num);
++	info = vc ? fbcon_info_from_console(vc_num) : NULL;
++	if (!info || vc_num != fg_console) {
++		ret = -EINVAL;
++	} else if (img->width != info->var.xres ||
++		   img->height != info->var.yres) {
++		pr_err("fbcondecor: picture dimensions mismatch: %ux%u vs %ux%u\n",
++		       img->width, img->height, info->var.xres, info->var.yres);
++		ret = -EINVAL;
++	} else if (img->depth != info->var.bits_per_pixel) {
++		pr_err("fbcondecor: picture depth mismatch: %u vs %u\n",
++		       img->depth, info->var.bits_per_pixel);
++		ret = -EINVAL;
++	} else {
++		ret = 0;
++	}
++	console_unlock();
++	if (ret)
++		return ret;
++
++	if (img->depth == 8) {
++		if (!img->cmap.len || img->cmap.len > 256 ||
++		    !img->cmap.red || !img->cmap.green || !img->cmap.blue)
++			return -EINVAL;
++
++		clen = img->cmap.len * sizeof(u16);
++		cmap = kmalloc(3 * clen, GFP_KERNEL);
++		if (!cmap)
++			return -ENOMEM;
++
++		if (copy_from_user(cmap,
++				   (const void __force __user *)img->cmap.red, clen) ||
++		    copy_from_user(cmap + img->cmap.len,
++				   (const void __force __user *)img->cmap.green, clen) ||
++		    copy_from_user(cmap + 2 * img->cmap.len,
++				   (const void __force __user *)img->cmap.blue, clen)) {
++			kfree(cmap);
++			return -EFAULT;
++		}
++	}
++
++	/*
++	 * Allocate an additional byte so that we never go outside of the
++	 * buffer boundaries in the rendering functions in a 24 bpp mode.
++	 */
++	data = vmalloc(len + 1);
++	if (!data) {
++		kfree(cmap);
++		return -ENOMEM;
++	}
++
++	if (copy_from_user(data, (const void __force __user *)img->data, len)) {
++		ret = -EFAULT;
++		goto out_free;
++	}
++
++	console_lock();
++	vc = fbcon_decor_vc(vc_num);
++	info = vc ? fbcon_info_from_console(vc_num) : NULL;
++	if (!info || vc_num != fg_console ||
++	    img->width != info->var.xres || img->height != info->var.yres ||
++	    img->depth != info->var.bits_per_pixel) {
++		console_unlock();
++		ret = -EINVAL;
++		goto out_free;
++	}
++
++	fbcon_decor_release_info(info);
++	info->bgdecor = *img;
++	info->bgdecor.data = data;
++	info->bgdecor_theme = kstrdup(vc->vc_decor.theme, GFP_KERNEL);
++	memset(&info->bgdecor.cmap, 0, sizeof(info->bgdecor.cmap));
++	if (cmap) {
++		info->bgdecor.cmap.start = img->cmap.start;
++		info->bgdecor.cmap.len = img->cmap.len;
++		info->bgdecor.cmap.red = cmap;
++		info->bgdecor.cmap.green = cmap + img->cmap.len;
++		info->bgdecor.cmap.blue = cmap + 2 * img->cmap.len;
++	}
++
++	if (fbcon_decor_active(info, vc)) {
++		redraw_screen(vc, 0);
++		update_region(vc, vc->vc_origin + vc->vc_size_row * vc->vc_top,
++			      vc->vc_size_row * (vc->vc_bottom - vc->vc_top) / 2);
++		fbcon_decor_clear_margins(vc, info, 0);
++	}
++
++	console_unlock();
++
++	return 0;
++
++out_free:
++	vfree(data);
++	kfree(cmap);
++	return ret;
++}
++
++static long fbcon_decor_do_ioctl(unsigned int cmd, unsigned int vc_num,
++				 void __user *data)
++{
++	switch (cmd) {
++	case FBIOCONDECOR_SETPIC: {
++		struct fb_image img;
++
++		if (copy_from_user(&img, data, sizeof(img)))
++			return -EFAULT;
++
++		return fbcon_decor_ioctl_dosetpic(vc_num, &img);
++	}
++	case FBIOCONDECOR_SETCFG: {
++		struct vc_decor cfg;
++
++		if (copy_from_user(&cfg, data, sizeof(cfg)))
++			return -EFAULT;
++
++		return fbcon_decor_ioctl_dosetcfg(vc_num, &cfg);
++	}
++	case FBIOCONDECOR_GETCFG: {
++		struct vc_decor cfg;
++		int ret;
++
++		if (copy_from_user(&cfg, data, sizeof(cfg)))
++			return -EFAULT;
++
++		ret = fbcon_decor_ioctl_dogetcfg(vc_num, &cfg);
++		if (ret)
++			return ret;
++
++		return copy_to_user(data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
++	}
++	case FBIOCONDECOR_SETSTATE: {
++		unsigned int state;
++
++		if (get_user(state, (unsigned int __user *)data))
++			return -EFAULT;
++
++		return fbcon_decor_ioctl_dosetstate(vc_num, state);
++	}
++	case FBIOCONDECOR_GETSTATE: {
++		unsigned int state = 0;
++		int ret;
++
++		ret = fbcon_decor_ioctl_dogetstate(vc_num, &state);
++		if (ret)
++			return ret;
++
++		return put_user(state, (unsigned int __user *)data);
++	}
++	default:
++		return -ENOIOCTLCMD;
++	}
++}
++
++static long fbcon_decor_ioctl(struct file *filp, unsigned int cmd,
++			      unsigned long arg)
++{
++	struct fbcon_decor_iowrapper wrapper;
++
++	if (copy_from_user(&wrapper, (void __user *)arg, sizeof(wrapper)))
++		return -EFAULT;
++
++	return fbcon_decor_do_ioctl(cmd, wrapper.vc,
++				    (void __force __user *)wrapper.data);
++}
++
++#ifdef CONFIG_COMPAT
++
++struct fbcon_decor_iowrapper32 {
++	unsigned short vc;		/* Virtual console */
++	unsigned char origin;		/* Point of origin of the request */
++	compat_uptr_t data;
++};
++
++struct vc_decor32 {
++	__u8 bg_color;
++	__u8 state;
++	__u16 tx, ty;
++	__u16 twidth, theight;
++	compat_uptr_t theme;
++};
++
++struct fb_cmap32 {
++	__u32 start;
++	__u32 len;
++	compat_uptr_t red;
++	compat_uptr_t green;
++	compat_uptr_t blue;
++	compat_uptr_t transp;
++};
++
++struct fb_image32 {
++	__u32 dx;
++	__u32 dy;
++	__u32 width;
++	__u32 height;
++	__u32 fg_color;
++	__u32 bg_color;
++	__u8 depth;
++	compat_uptr_t data;
++	struct fb_cmap32 cmap;
++};
++
++#define FBIOCONDECOR_SETCFG32	_IOWR('F', 0x19, struct fbcon_decor_iowrapper32)
++#define FBIOCONDECOR_GETCFG32	_IOR('F', 0x1A, struct fbcon_decor_iowrapper32)
++#define FBIOCONDECOR_SETSTATE32	_IOWR('F', 0x1B, struct fbcon_decor_iowrapper32)
++#define FBIOCONDECOR_GETSTATE32	_IOR('F', 0x1C, struct fbcon_decor_iowrapper32)
++#define FBIOCONDECOR_SETPIC32	_IOWR('F', 0x1D, struct fbcon_decor_iowrapper32)
++
++static void vc_decor_from_compat(struct vc_decor *to, const struct vc_decor32 *from)
++{
++	to->bg_color = from->bg_color;
++	to->state = from->state;
++	to->tx = from->tx;
++	to->ty = from->ty;
++	to->twidth = from->twidth;
++	to->theight = from->theight;
++	to->theme = (char __force *)compat_ptr(from->theme);
++}
++
++static void vc_decor_to_compat(struct vc_decor32 *to, const struct vc_decor *from)
++{
++	to->bg_color = from->bg_color;
++	to->state = from->state;
++	to->tx = from->tx;
++	to->ty = from->ty;
++	to->twidth = from->twidth;
++	to->theight = from->theight;
++	to->theme = ptr_to_compat((void __force __user *)from->theme);
++}
++
++static long fbcon_decor_compat_ioctl(struct file *filp, unsigned int cmd,
++				     unsigned long arg)
++{
++	struct fbcon_decor_iowrapper32 wrapper;
++	void __user *data;
++
++	if (copy_from_user(&wrapper, compat_ptr(arg), sizeof(wrapper)))
++		return -EFAULT;
++	data = compat_ptr(wrapper.data);
++
++	switch (cmd) {
++	case FBIOCONDECOR_SETPIC32: {
++		struct fb_image32 img32;
++		struct fb_image img;
++
++		if (copy_from_user(&img32, data, sizeof(img32)))
++			return -EFAULT;
++
++		memset(&img, 0, sizeof(img));
++		img.dx = img32.dx;
++		img.dy = img32.dy;
++		img.width = img32.width;
++		img.height = img32.height;
++		img.fg_color = img32.fg_color;
++		img.bg_color = img32.bg_color;
++		img.depth = img32.depth;
++		img.data = (const char __force *)compat_ptr(img32.data);
++		img.cmap.start = img32.cmap.start;
++		img.cmap.len = img32.cmap.len;
++		img.cmap.red = (__u16 __force *)compat_ptr(img32.cmap.red);
++		img.cmap.green = (__u16 __force *)compat_ptr(img32.cmap.green);
++		img.cmap.blue = (__u16 __force *)compat_ptr(img32.cmap.blue);
++		img.cmap.transp = (__u16 __force *)compat_ptr(img32.cmap.transp);
++
++		return fbcon_decor_ioctl_dosetpic(wrapper.vc, &img);
++	}
++	case FBIOCONDECOR_SETCFG32: {
++		struct vc_decor32 cfg32;
++		struct vc_decor cfg;
++
++		if (copy_from_user(&cfg32, data, sizeof(cfg32)))
++			return -EFAULT;
++
++		vc_decor_from_compat(&cfg, &cfg32);
++
++		return fbcon_decor_ioctl_dosetcfg(wrapper.vc, &cfg);
++	}
++	case FBIOCONDECOR_GETCFG32: {
++		struct vc_decor32 cfg32;
++		struct vc_decor cfg;
++		int ret;
++
++		if (copy_from_user(&cfg32, data, sizeof(cfg32)))
++			return -EFAULT;
++
++		vc_decor_from_compat(&cfg, &cfg32);
++		ret = fbcon_decor_ioctl_dogetcfg(wrapper.vc, &cfg);
++		if (ret)
++			return ret;
++		vc_decor_to_compat(&cfg32, &cfg);
++
++		return copy_to_user(data, &cfg32, sizeof(cfg32)) ? -EFAULT : 0;
++	}
++	case FBIOCONDECOR_SETSTATE32: {
++		compat_uint_t state;
++
++		if (get_user(state, (compat_uint_t __user *)data))
++			return -EFAULT;
++
++		return fbcon_decor_ioctl_dosetstate(wrapper.vc, state);
++	}
++	case FBIOCONDECOR_GETSTATE32: {
++		unsigned int state = 0;
++		int ret;
++
++		ret = fbcon_decor_ioctl_dogetstate(wrapper.vc, &state);
++		if (ret)
++			return ret;
++
++		return put_user((compat_uint_t)state, (compat_uint_t __user *)data);
++	}
++	default:
++		return -ENOIOCTLCMD;
++	}
++}
++
++#endif /* CONFIG_COMPAT */
++
++static const struct file_operations fbcon_decor_fops = {
++	.owner		= THIS_MODULE,
++	.unlocked_ioctl	= fbcon_decor_ioctl,
++#ifdef CONFIG_COMPAT
++	.compat_ioctl	= fbcon_decor_compat_ioctl,
++#endif
++};
++
++static struct miscdevice fbcon_decor_dev = {
++	.minor	= MISC_DYNAMIC_MINOR,
++	.name	= "fbcondecor",
++	.fops	= &fbcon_decor_fops,
++};
++
++/* Frees the background picture of a framebuffer. */
++void fbcon_decor_release_info(struct fb_info *info)
++{
++	vfree(info->bgdecor.data);
++	kfree(info->bgdecor.cmap.red);
++	kfree(info->bgdecor_theme);
++	memset(&info->bgdecor, 0, sizeof(info->bgdecor));
++	info->bgdecor_theme = NULL;
++}
++
++/* Forgets the decoration configuration of a virtual console. */
++void fbcon_decor_vc_reset(struct vc_data *vc)
++{
++	kfree(vc->vc_decor.theme);
++	memset(&vc->vc_decor, 0, sizeof(vc->vc_decor));
++}
++
++/*
++ * Called with the console lock held whenever fbcon takes over the console.
++ * The control device and the sysctl are registered once; the helper is
++ * asked to initialize the decorations on every takeover, as a framebuffer
++ * driver replacing another one (e.g. amdgpu after simpledrm) starts with
++ * no picture and consoles with no configuration.
++ */
++void fbcon_decor_init(void)
++{
++	if (!fbcon_decor_registered) {
++		int err = misc_register(&fbcon_decor_dev);
++
++		if (err) {
++			pr_err("fbcondecor: failed to register device (%d)\n", err);
++			return;
++		}
++
++		if (!register_sysctl("kernel", fbcon_decor_sysctl_table))
++			pr_warn("fbcondecor: failed to register sysctl\n");
++
++		fbcon_decor_registered = true;
++	}
++
++	fbcon_decor_call_helper("init", 0);
++}
+diff --git a/drivers/video/fbdev/core/fbcondecor.h b/drivers/video/fbdev/core/fbcondecor.h
+new file mode 100644
+index 000000000000..967a081cbe1c
+--- /dev/null
++++ b/drivers/video/fbdev/core/fbcondecor.h
+@@ -0,0 +1,143 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ *  linux/drivers/video/fbdev/core/fbcondecor.h -- Framebuffer Console Decoration headers
++ *
++ *  Copyright (C) 2004 Michal Januszewski <michalj+fbcondecor@gmail.com>
++ */
++
++#ifndef _VIDEO_FBCONDECOR_H
++#define _VIDEO_FBCONDECOR_H
++
++#include <linux/fb.h>
++#include <linux/string.h>
++#include <linux/types.h>
++#include <linux/vt_kern.h>
++
++#include "fbcon.h"
++
++struct fb_cursor;
++struct fb_info;
++struct vc_data;
++
++#ifdef CONFIG_FB_CON_DECOR
++
++/* fbcondecor.c; all functions must be called with the console lock held */
++void fbcon_decor_init(void);
++void fbcon_decor_release_info(struct fb_info *info);
++void fbcon_decor_vc_reset(struct vc_data *vc);
++int fbcon_decor_call_helper(const char *cmd, unsigned short vc_num);
++int fbcon_decor_disable(struct vc_data *vc, bool redraw);
++void fbcon_decor_modechange(struct vc_data *vc);
++
++/* cfbcondecor.c; only to be called when fbcon_decor_active() is true */
++void fbcon_decor_putcs(struct vc_data *vc, struct fb_info *info,
++		       const unsigned short *s, int count, int yy, int xx,
++		       int fg_color, int bg_color);
++void fbcon_decor_cursor(struct fb_info *info, struct fb_cursor *cursor);
++void fbcon_decor_clear(struct vc_data *vc, struct fb_info *info, int sy, int sx,
++		       int height, int width, int bg_color);
++void fbcon_decor_clear_margins(struct vc_data *vc, struct fb_info *info,
++			       int bottom_only);
++void fbcon_decor_blank(struct vc_data *vc, struct fb_info *info, int blank);
++void fbcon_decor_set_palette(struct vc_data *vc, struct fb_info *info);
++
++/* The console has decorations configured and switched on. */
++static inline bool fbcon_decor_active_vc(const struct vc_data *vc)
++{
++	return vc->vc_decor.state && vc->vc_decor.theme;
++}
++
++/* The framebuffer has a background picture matching the current video mode. */
++static inline bool fbcon_decor_picture_fits(const struct fb_info *info)
++{
++	return info->bgdecor.data &&
++	       info->bgdecor.width == info->var.xres &&
++	       info->bgdecor.height == info->var.yres &&
++	       info->bgdecor.depth == info->var.bits_per_pixel;
++}
++
++/* ... and it was loaded for the theme of @vc. */
++static inline bool fbcon_decor_picture_ok(const struct fb_info *info,
++					  const struct vc_data *vc)
++{
++	return fbcon_decor_picture_fits(info) && info->bgdecor_theme &&
++	       vc->vc_decor.theme &&
++	       !strcmp(info->bgdecor_theme, vc->vc_decor.theme);
++}
++
++/*
++ * The console has decorations switched on and the framebuffer a picture
++ * matching the video mode, so the decorations can actually be drawn.
++ * Rotated consoles are not supported.
++ */
++static inline bool fbcon_decor_active(const struct fb_info *info,
++				      const struct vc_data *vc)
++{
++	const struct fbcon_par *par = info->fbcon_par;
++
++	return fbcon_decor_active_vc(vc) && fbcon_decor_picture_fits(info) &&
++	       par && par->rotate == FB_ROTATE_UR;
++}
++
++static inline bool fbcon_decor_vc_state(const struct vc_data *vc)
++{
++	return vc->vc_decor.state;
++}
++
++#else /* CONFIG_FB_CON_DECOR */
++
++static inline void fbcon_decor_init(void) {}
++static inline void fbcon_decor_release_info(struct fb_info *info) {}
++static inline void fbcon_decor_vc_reset(struct vc_data *vc) {}
++static inline int fbcon_decor_call_helper(const char *cmd, unsigned short vc_num)
++{
++	return 0;
++}
++static inline int fbcon_decor_disable(struct vc_data *vc, bool redraw)
++{
++	return 0;
++}
++static inline void fbcon_decor_modechange(struct vc_data *vc) {}
++
++static inline void fbcon_decor_putcs(struct vc_data *vc, struct fb_info *info,
++				     const unsigned short *s, int count,
++				     int yy, int xx, int fg_color, int bg_color) {}
++static inline void fbcon_decor_cursor(struct fb_info *info,
++				      struct fb_cursor *cursor) {}
++static inline void fbcon_decor_clear(struct vc_data *vc, struct fb_info *info,
++				     int sy, int sx, int height, int width,
++				     int bg_color) {}
++static inline void fbcon_decor_clear_margins(struct vc_data *vc,
++					     struct fb_info *info,
++					     int bottom_only) {}
++static inline void fbcon_decor_blank(struct vc_data *vc, struct fb_info *info,
++				     int blank) {}
++static inline void fbcon_decor_set_palette(struct vc_data *vc,
++					   struct fb_info *info) {}
++
++static inline bool fbcon_decor_active_vc(const struct vc_data *vc)
++{
++	return false;
++}
++static inline bool fbcon_decor_picture_fits(const struct fb_info *info)
++{
++	return false;
++}
++static inline bool fbcon_decor_picture_ok(const struct fb_info *info,
++					  const struct vc_data *vc)
++{
++	return false;
++}
++static inline bool fbcon_decor_active(const struct fb_info *info,
++				      const struct vc_data *vc)
++{
++	return false;
++}
++static inline bool fbcon_decor_vc_state(const struct vc_data *vc)
++{
++	return false;
++}
++
++#endif /* CONFIG_FB_CON_DECOR */
++
++#endif /* _VIDEO_FBCONDECOR_H */
+diff --git a/include/linux/console_struct.h b/include/linux/console_struct.h
+index fe915afdece5..b920bb52cf01 100644
+--- a/include/linux/console_struct.h
++++ b/include/linux/console_struct.h
+@@ -16,6 +16,7 @@
+ #include <linux/vt.h>
+ #include <linux/wait.h>
+ #include <linux/workqueue.h>
++#include <linux/console_decor.h>
+ 
+ struct uni_pagedict;
+ 
+@@ -190,6 +191,9 @@ struct vc_data {
+ 	u32		**vc_saved_uni_lines;
+ 	unsigned int	vc_saved_cols;
+ 	unsigned int	vc_saved_rows;
++#ifdef CONFIG_FB_CON_DECOR
++	struct vc_decor vc_decor;		/* framebuffer console decorations */
++#endif
+ 	/* additional information is in vt_kern.h */
+ };
+ 
+diff --git a/include/linux/fb.h b/include/linux/fb.h
+index e9a26e82322a..6d7087d58ad2 100644
+--- a/include/linux/fb.h
++++ b/include/linux/fb.h
+@@ -280,6 +280,14 @@ struct fb_ops {
+ 	/* Draws a image to the display */
+ 	void (*fb_imageblit) (struct fb_info *info, const struct fb_image *image);
+ 
++	/*
++	 * Reports an area of the screen memory modified by direct writes
++	 * (optional); needed by drivers with a shadow buffer or deferred I/O
++	 * to flush the changes to the display
++	 */
++	void (*fb_damage)(struct fb_info *info, u32 x, u32 y, u32 width,
++			  u32 height);
++
+ 	/* Draws cursor */
+ 	int (*fb_cursor) (struct fb_info *info, struct fb_cursor *cursor);
+ 
+@@ -504,6 +512,10 @@ struct fb_info {
+ #define FBINFO_STATE_SUSPENDED	1
+ 	u32 state;			/* Hardware state i.e suspend */
+ 	struct fbcon_par *fbcon_par;    /* fbcon use-only private area */
++#ifdef CONFIG_FB_CON_DECOR
++	struct fb_image bgdecor;	/* console decoration background */
++	char *bgdecor_theme;		/* theme the background was loaded for */
++#endif
+ 	/* From here on everything is device dependent */
+ 	void *par;
+ 
+@@ -697,6 +709,11 @@ extern int fb_deferred_io_fsync(struct file *file, loff_t start,
+ 	{ \
+ 		__mode ## _imageblit(info, image); \
+ 		__damage_area(info, image->dx, image->dy, image->width, image->height); \
++	} \
++	static void __prefix ## _defio_damage(struct fb_info *info, \
++					      u32 x, u32 y, u32 width, u32 height) \
++	{ \
++		__damage_area(info, x, y, width, height); \
+ 	}
+ 
+ #define FB_GEN_DEFAULT_DEFERRED_IOMEM_OPS(__prefix, __damage_range, __damage_area) \
+@@ -722,7 +739,8 @@ extern int fb_deferred_io_fsync(struct file *file, loff_t start,
+ #define __FB_DEFAULT_DEFERRED_OPS_DRAW(__prefix) \
+ 	.fb_fillrect	= __prefix ## _defio_fillrect, \
+ 	.fb_copyarea	= __prefix ## _defio_copyarea, \
+-	.fb_imageblit	= __prefix ## _defio_imageblit
++	.fb_imageblit	= __prefix ## _defio_imageblit, \
++	.fb_damage	= __prefix ## _defio_damage
+ 
+ #define __FB_DEFAULT_DEFERRED_OPS_MMAP(__prefix) \
+ 	.fb_mmap	= fb_deferred_io_mmap
+diff --git a/include/uapi/linux/console_decor.h b/include/uapi/linux/console_decor.h
+new file mode 100644
+index 000000000000..cb113bba127d
+--- /dev/null
++++ b/include/uapi/linux/console_decor.h
+@@ -0,0 +1,19 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef _UAPI_LINUX_CONSOLE_DECOR_H
++#define _UAPI_LINUX_CONSOLE_DECOR_H
++
++#include <linux/types.h>
++
++/*
++ * Configuration of the framebuffer console decorations for one virtual
++ * console (drivers/video/fbdev/core/fbcondecor.c)
++ */
++struct vc_decor {
++	__u8 bg_color;		/* The color that is to be treated as transparent */
++	__u8 state;		/* Current decor state: 0 = off, 1 = on */
++	__u16 tx, ty;		/* Top left corner coordinates of the text field */
++	__u16 twidth, theight;	/* Width and height of the text field */
++	char *theme;		/* Theme name, at most FBCON_DECOR_THEME_LEN bytes */
++};
++
++#endif /* _UAPI_LINUX_CONSOLE_DECOR_H */
+diff --git a/include/uapi/linux/fb.h b/include/uapi/linux/fb.h
+index 22acaaec7b1c..42f50b48cd9c 100644
+--- a/include/uapi/linux/fb.h
++++ b/include/uapi/linux/fb.h
+@@ -10,6 +10,13 @@
+ 
+ #define FB_MAX			32	/* sufficient for now */
+ 
++/* Argument of the framebuffer console decoration ioctls */
++struct fbcon_decor_iowrapper {
++	unsigned short vc;		/* Virtual console */
++	unsigned char origin;		/* Point of origin of the request */
++	void *data;
++};
++
+ /* ioctls
+    0x46 is 'F'								*/
+ #define FBIOGET_VSCREENINFO	0x4600
+@@ -37,6 +44,16 @@
+ #define FBIOGET_DISPINFO        0x4618
+ #define FBIO_WAITFORVSYNC	_IOW('F', 0x20, __u32)
+ 
++#define FBIOCONDECOR_SETCFG	_IOWR('F', 0x19, struct fbcon_decor_iowrapper)
++#define FBIOCONDECOR_GETCFG	_IOR('F', 0x1A, struct fbcon_decor_iowrapper)
++#define FBIOCONDECOR_SETSTATE	_IOWR('F', 0x1B, struct fbcon_decor_iowrapper)
++#define FBIOCONDECOR_GETSTATE	_IOR('F', 0x1C, struct fbcon_decor_iowrapper)
++#define FBIOCONDECOR_SETPIC	_IOWR('F', 0x1D, struct fbcon_decor_iowrapper)
++
++#define FBCON_DECOR_THEME_LEN		128	/* Maximum length of a theme name */
++#define FBCON_DECOR_IO_ORIG_KERNEL	0	/* Kernel ioctl origin */
++#define FBCON_DECOR_IO_ORIG_USER	1	/* User ioctl origin */
++
+ #define FB_TYPE_PACKED_PIXELS		0	/* Packed Pixels	*/
+ #define FB_TYPE_PLANES			1	/* Non interleaved planes */
+ #define FB_TYPE_INTERLEAVED_PLANES	2	/* Interleaved planes	*/
