@@ -1,0 +1,12 @@
+diff -Naur splashutils-1.5.4.4-orig/src/Makefile.am splashutils-1.5.4.4/src/Makefile.am
+--- splashutils-1.5.4.4-orig/src/Makefile.am	2026-10-28 10:14:32.962022307 +0100
++++ splashutils-1.5.4.4/src/Makefile.am	2026-10-28 10:14:32.963022314 +0100
+@@ -241,7 +241,7 @@
+ 	fbsplash.h
+ 
+ fbcondecor_helper_CPPFLAGS  = -DWITH_ERRLIST -DTARGET_KERNEL -DTT_CONFIG_OPTION_BYTECODE_INTERPRETER
+-fbcondecor_helper_CFLAGS    = -Os -w -ffunction-sections -fdata-sections -I.@am__isrc@
++fbcondecor_helper_CFLAGS    = -Os -w -Wno-error=int-conversion -ffunction-sections -fdata-sections -I.@am__isrc@
+ fbcondecor_helper_LDFLAGS   = 
+ fbcondecor_helper_LDADD     = 
+ 

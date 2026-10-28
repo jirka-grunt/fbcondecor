@@ -1,0 +1,11 @@
+--- splashutils-1.5.4.4-orig/src/ttf.c	2011-06-12 23:43:39.000000000 +0200
++++ splashutils-1.5.4.4/src/ttf.c	2026-10-28 10:42:36.267414821 +0100
+@@ -687,6 +687,8 @@
+ 		dup(pfds[1]);
+ 		close(pfds[0]);
+ 		execlp("sh", "sh", "-c", prg, NULL);
++		/* exec failed (no sh?): the child must not continue as a second helper */
++		_exit(127);
+ 	} else {
+ 		FD_ZERO(&rfds);
+ 		FD_SET(pfds[0], &rfds);

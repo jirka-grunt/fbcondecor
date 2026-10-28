@@ -1,0 +1,100 @@
+diff -Naur splashutils-1.5.4.4-orig/src/common.c splashutils-1.5.4.4/src/common.c
+--- splashutils-1.5.4.4-orig/src/common.c	2011-06-12 23:43:39.000000000 +0200
++++ splashutils-1.5.4.4/src/common.c	2026-10-28 09:02:24.720877850 +0100
+@@ -22,6 +22,7 @@
+ #include <sys/mman.h>
+ #include <dirent.h>
+ #include <errno.h>
++#include <sys/sysmacros.h>
+ 
+ #include "common.h"
+ #include "render.h"
+diff -Naur splashutils-1.5.4.4-orig/src/kernel.c splashutils-1.5.4.4/src/kernel.c
+--- splashutils-1.5.4.4-orig/src/kernel.c	2011-06-12 23:43:39.000000000 +0200
++++ splashutils-1.5.4.4/src/kernel.c	2026-10-28 09:02:24.720700496 +0100
+@@ -18,6 +18,8 @@
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
++#include <sys/mount.h>
++#include <sys/stat.h>
+ #include <linux/tiocl.h>
+ 
+ #include "common.h"
+diff -Naur splashutils-1.5.4.4-orig/src/render.h splashutils-1.5.4.4/src/render.h
+--- splashutils-1.5.4.4-orig/src/render.h	2011-06-12 23:43:39.000000000 +0200
++++ splashutils-1.5.4.4/src/render.h	2026-10-28 09:02:24.721111009 +0100
+@@ -277,6 +277,7 @@
+ void rgba2fb(rgbacolor* data, u8 *bg, u8* out, int len, int y, u8 alpha, u8 opacity);
+ void put_pixel(u8 a, u8 r, u8 g, u8 b, u8 *src, u8 *dst, u8 add);
+ void invalidate_all(stheme_t *theme);
++void obj_visibility_set(stheme_t *theme, obj *o, bool visible);
+ void invalidate_service(stheme_t *theme, char *svc, enum ESVC state);
+ void invalidate_progress(stheme_t *theme);
+ void invalidate_textbox(stheme_t *theme, bool active);
+@@ -305,6 +306,7 @@
+ 
+ /* list.c */
+ void list_add(list *l, void *obj);
++void list_ringadd(list *l, void *obj);
+ void list_free(list l, bool free_item);
+ void list_del(list *l, item *prev, item *curr);
+ 
+diff -Naur splashutils-1.5.4.4-orig/src/util.c splashutils-1.5.4.4/src/util.c
+--- splashutils-1.5.4.4-orig/src/util.c	2011-06-12 23:43:39.000000000 +0200
++++ splashutils-1.5.4.4/src/util.c	2026-10-28 09:02:24.721403720 +0100
+@@ -42,7 +42,7 @@
+ 	{ "quiet",  no_argument, NULL, 'q'},
+ };
+ 
+-enum { none, getres, paint, setmode, getmode, repaint } arg_task;
++enum { none, getres, paint, setmode, getmode, repaint } arg_task2;
+ 
+ struct cmd {
+ 	char *name;
+@@ -98,7 +98,7 @@
+ 	fbsplash_lib_init(fbspl_bootup);
+ 	fbsplashr_init(false);
+ 
+-	arg_task = none;
++	arg_task2 = none;
+ 	arg_vc = -1;
+ 
+ 	config.reqmode = FBSPL_MODE_SILENT;
+@@ -125,7 +125,7 @@
+ 		case 'c':
+ 			for (i = 0; i < sizeof(cmds) / sizeof(struct cmd); i++) {
+ 				if (!strcmp(optarg, cmds[i].name)) {
+-					arg_task = cmds[i].value;
++					arg_task2 = cmds[i].value;
+ 					break;
+ 				}
+ 			}
+@@ -163,12 +163,12 @@
+ 		}
+ 	}
+ 
+-	if (arg_task == none) {
++	if (arg_task2 == none) {
+ 		usage();
+ 		return 0;
+ 	}
+ 
+-	switch (arg_task) {
++	switch (arg_task2) {
+ 	/* Only load the theme if it will actually be used. */
+ #ifdef CONFIG_DEPRECATED
+ 	case paint:
+@@ -181,10 +181,10 @@
+ 		break;
+ 	}
+ 
+-	if (arg_task != setmode && arg_vc == -1)
++	if (arg_task2 != setmode && arg_vc == -1)
+ 		arg_vc = 0;
+ 
+-	switch (arg_task) {
++	switch (arg_task2) {
+ 
+ 	case getres:
+ 	{
